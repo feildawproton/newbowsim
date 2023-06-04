@@ -1,0 +1,1 @@
+nvcc -Xcompiler -fPIC -shared -o MCHI_funcs.so MCHI_funcs.cu

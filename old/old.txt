@@ -1,0 +1,890 @@
+def _interpolate_section(x_k, x_kp1, y_k, y_kp1, m_k, m_kp1, res) -> Tuple[np.ndarray, np.ndarray]:
+    delta = x_kp1 - x_k
+    
+    X = np.zeros(res)
+    Y = np.zeros(res)
+    for n in range(res):
+        t = n / res
+        Y[n] = y_k*_h_00(t) + delta*m_k*_h_10(t) + y_kp1*_h_01(t) + delta*m_kp1*_h_11(t)
+        X[n] = x_k + t*delta
+    
+    return X, Y
+
+def _interpolate(L: np.ndarray, W: np.ndarray, M: np.ndarray, Ns: int) -> Tuple[np.ndarray, np.ndarray]:
+    if L.size != W.size != M.size:
+        print("lengths of X, Y, and M must be the same")
+
+    intX = []
+    intY = []
+    for k in range(L.size - 1):
+        X_section, Y_section = _interpolate_section(L[k], L[k+1], W[k], W[k+1], M[k], M[k+1], Ns[k])
+        intX = np.append(intX, X_section)
+        intY = np.append(intY, Y_section)
+    intX = np.append(intX, L[-1])
+    intY = np.append(intY, W[-1])
+    return intX, intY
+    
+def interpolate_1d(L: np.ndarray, W: np.ndarray, N_tot: int) -> Tuple[np.ndarray, np.ndarray]:
+    #proportially assign the sections
+    print("Requesting N_tot= ", N_tot)
+    tot_len = 0
+    lens = np.zeros(W.size - 1)
+    for i in range(lens.size):
+        length   = math.sqrt((W[i + 1] - W[i])*(W[i + 1] - W[i]) + (L[i + 1] - L[i])*(L[i + 1] - L[i]))
+        #print(length)
+        lens[i]  = length
+        tot_len += length
+    #print("total len= ", tot_len)
+    #print("lens= ", lens)
+
+    Ns = np.zeros(lens.size, dtype=int)
+    new_n_tot = 0
+    for i in range(Ns.size):
+        frac        = lens[i] / tot_len
+        N           = int(frac * N_tot) + 1
+        Ns[i]       = N
+        new_n_tot   += N
+        #print(lens[i], N, new_n_tot)
+    
+    print("Ns: ", Ns)
+    print("New Total N= ", new_n_tot)
+
+    M = _calc_M(L, W)
+    intL, intW = _interpolate(L, W, M, Ns)
+    return intL, intW 
+
+'''
+def calc_error_jax(u_i: np.ndarray, K_i: np.ndarray, u_ndc: np.ndarray, u_ctrl: np.ndarray) -> float:
+    u_error = 0
+    for i, ndx in enumerate(u_ndc):
+        diff    = u_i[ndx] - u_ctrl[i]
+        u_error   += diff*diff
+
+    #the controlled p will be the inverse of u_ndc
+    #if the node dof index isn't controlled by u_ctrl
+    #then it's value should be 0, since it shouldn't have any external forces
+    p_i     = jnp.matmul(K_i, u_i)
+    #print("p_i")
+    #print(p_i)
+    p_error = 0
+    for i in range(p_i.size):
+        if i not in u_ndc:
+            diff    = p_i[i]
+            p_error += .0001*diff * diff
+            #print("wait, did we ge here? ", i, p_error)
+
+    return p_error + u_error
+'''
+'''
+def displace_bow(X_0: np.ndarray, Y_0: np.ndarray, Kp_limb: np.ndarray):
+        #begin by setting X to X_0 and Y to Y_=0
+    #use np.copy() instead of assignment because it is more explicit
+    X = np.copy(X_0)
+    Y = np.copy(Y_0)
+
+    #confirm the number of nodes and elements make sense
+    #in the case of just the limb there should be 1 more than number of elements
+    num_nodes = X_0.size
+    num_elems = Kp_limb.shape[0]
+    assert num_nodes == Y_0.size == num_elems + 1
+    gK_i = np.zeros([3*num_nodes, 3*num_nodes])
+    
+    #need to use postive valued ndcs for the contraint
+    #otherwise the error calculation will skip it
+    u_ndc       = np.array([0, 1, 2, 3*num_nodes-3, 3*num_nodes-2], dtype=int)
+    
+    #since we are resetting K every iteration (to account for rotation)
+    #we need to collect p as a sum
+    p = np.zeros(num_nodes * 3)
+    while np.min(Y) > - Draw["Brace height"]:
+        Ts_limb = calc_T_g2l_limb(X, Y)
+        gKs_limb = Ms_l2g(Kp_limb, Ts_limb)
+        
+        #reform gK
+        #as to not recreate gK, zero it out before reforming
+        gK_i[:,:] = 0
+        insert_gKlimb(gK_i, gKs_limb)
+        
+        #we will use thhe normalize size of thhe 
+        x_nock      = 0
+        y_nock      = - Draw["Brace height"]
+        x_node      = X[num_nodes - 1]
+        y_node      = Y[num_nodes - 1]
+        disp_vec     = np.array([[x_nock - x_node],[y_nock - y_node]])
+        norm        = np.linalg.norm(disp_vec)
+        disp_vec     = np.divide(disp_vec, norm)
+        
+        #update the u control vector with this displacement
+        u_ctrl  = np.array([0, 0, 0, disp_vec[0], disp_vec[1]], dtype=float)
+        u_i     = np.zeros(3 * num_nodes)
+        
+        results = minimize(calc_error_jax, u_i, args=(gK_i, u_ndc, u_ctrl), method="BFGS")
+        
+        u_i = results.x
+        
+        #once we've met our condition, update X and Y
+        X, Y  = update_pos(X, Y, u_i)
+        print("min Y now: ", np.min(Y))
+
+        p_i = np.matmul(gK_i, u_i)
+        p = np.add(p_i, p)
+    
+    return X, Y, p
+'''
+
+ 
+ '''
+    assert X_unbraced.size == Y_unbraced.size
+    assert X_unbraced.size - 1 == Y_unbraced.size - 1 == Mp_limb.shape[0] == Kp_limb.shape[0] == T_limb_unbraced.shape[0]
+
+    num_nodes = X_unbraced.size
+    num_elems = Mp_limb.shape[0]
+    print("number of limb nodes = ", num_nodes)
+    print("number of limb elements= ", num_elems)
+    
+    gKs_limb = _Ms_l2g(Kp_limb, T_limb_unbraced)
+    print("Shape of K list in global= ", gKs_limb.shape)
+    
+    gMs_limb = _Ms_l2g(Mp_limb, T_limb_unbraced)
+    print("Shape of M list in global= ", gMs_limb.shape)
+    
+    gK = np.zeros([3*num_nodes, 3*num_nodes])
+    gM = np.zeros([3*num_nodes, 3*num_nodes])
+
+    np.set_printoptions(linewidth=np.inf)
+    for i in range(num_elems):
+        gindx = 3*i
+        gK[gindx:gindx+6, gindx:gindx+6] = np.add(gK[gindx:gindx+6, gindx:gindx+6], gKs_limb[i])
+        gM[gindx:gindx+6, gindx:gindx+6] = np.add(gM[gindx:gindx+6, gindx:gindx+6], gMs_limb[i])
+
+    
+    print("shape of gK ", gK.shape)
+    print("shape of gM ", gM.shape)
+
+    u = p_driven(gK, num_nodes-1, np.array([-1,-1]), .06)
+    print("u_i")
+    print(u)
+    
+    x_new = np.zeros(num_nodes)
+    y_new = np.zeros(num_nodes)
+    for i in range(num_nodes):
+        x_new[i] = X_unbraced[i] + u[i*3]
+        y_new[i] = Y_unbraced[i] + u[i*3 + 1]
+        
+    print("x_new")
+    print(x_new)
+    print("y_new")
+    print(y_new)
+        
+    fig, ax = plt.subplots(constrained_layout=True)
+    ax.set_title("Bracing the bow")
+    ax.plot(X_unbraced, Y_unbraced, color = "red")
+    ax.plot(x_new, y_new, color = "blue")
+    ax.set_xlabel("mm")
+    ax.set_ylabel("mm")
+    plt.show()     
+'''
+    
+
+'''
+    x = np.array([1, 2, 3])
+    y = np.array([1, 2, 3])
+    u_i = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9])
+    xnew, ynew = _update_pos(x, y, u_i)
+    print("xnew ", xnew)
+    print("ynew", ynew)
+    '''
+#if we aren't moving back we need to increment force
+        #otherwise just update to the recalculated force
+        '''
+        lam += p_incr
+        
+        if Ynew[-1] - Y[-1] > -1.0:
+            print("increment force from", lam, " to ", lam+p_incr)
+            lam += p_incr
+        '''
+        '''
+        else:
+            print("don't increment force")
+            p_i = np.matmul(gK, u_i)
+            pull_vec = np.array([p_i[-3], p_i[-2]])
+            lam2 =  np.linalg.norm(pull_vec)
+            print("update from ", lam, " to ", lam2)
+            lam = lam2
+        '''
+
+        #update X and Y
+        #Ts, K's, and gK will get updated next iteration
+        #X = np.copy(Xnew)
+        #Y = np.copy(Ynew)
+
+        #recalculate the force in case it goes down
+        #recall the the pull node is at the end of p_i
+        #p_i = [pu_0, pv_0, pt_0, ... , pu_N-1, pv_N-1, nt_N-1] = [p_0, p_1, p_2, ... , p_N-3, p_N-2, p_N-1]
+        '''
+        p_i = np.matmul(gK, u_i)
+        pull_vec = np.array([p_i[-3], p_i[-2]])
+        lam =  np.linalg.norm(pull_vec)
+        
+        print("end pull magnitude: ",  lam)
+        '''
+        print("u_i")
+        print(u_i)
+        print("Y")
+        print(Y)
+        '''
+        if np.min(u_i) > -1.0:
+            lam += p_incr
+        '''
+#F = MA for a bar
+def F_bar(rho, A, L, x_App, y_App, x_Bpp, y_Bpp):
+    M      = rho * A * L / 2
+    Fx_A   = M * x_App
+    Fy_A   = M * y_App
+    Fx_B   = M * x_Bpp
+    Fy_B   = M * y_Bpp
+    return  Fx_A, Fy_A, Fx_B, Fy_B
+
+#q(u, up) internal forces
+#elastic forces
+#using the Kelvin-Voigt model
+def Q_bar(  eta,  A,    L,    E,
+            x_Ap, y_Ap, x_Bp, y_Bp,
+            x_A,  y_A,  x_B,  y_B):
+
+
+    viscus_const    = eta * A / L
+    #print("old viscus const: ", viscus_const)
+    elastic_const   = E * A / L
+    #print("old elastic const: ", elastic_const)
+
+    #B - A here
+    dx  = x_B - x_A
+    dy  = y_B - y_A
+
+    dxp = x_Bp - x_Ap
+    dyp = y_Bp - y_Ap
+
+    elastic_scale = 1 - (L / math.sqrt(dx*dx + dy*dy))
+    #print("old elastic scale: ", elastic_scale)
+
+    VISCx_A = viscus_const * -dxp
+    VISCy_A = viscus_const * -dyp
+    VISCx_B = viscus_const *  dxp
+    VISCy_B = viscus_const *  dyp
+
+    ELASx_A = elastic_const * elastic_scale * -dx
+    ELASy_A = elastic_const * elastic_scale * -dy
+    ELASx_B = elastic_const * elastic_scale *  dx
+    ELASy_B = elastic_const * elastic_scale *  dy
+
+    Qx_A    = VISCx_A + ELASx_A
+    Qy_A    = VISCy_A + ELASy_A
+    Qx_B    = VISCx_B + ELASx_B
+    Qy_B    = VISCy_B + ELASy_B
+
+    return Qx_A, Qy_A, Qx_B, Qy_B
+
+
+
+#external force p
+#p = m*a + q, where q is the internal forces
+# u = (x_a, y_a, x_b, y_b)
+# u' = (x_aP, y_aP, x_bP, y_bP)
+def P_bar(  rho,   A,     L,     eta,     E,
+            x_App, y_App, x_Bpp, y_Bpp,
+            x_Ap,  y_Ap,  x_Bp,  y_Bp,
+            x_A,   y_A,   x_B,   y_B):
+    '''
+    rho is the density
+    A is the area
+    L is the length
+    eta is the viscosity
+    upp is u double prime
+    up is u prime
+    u is the prosition of the nodes [ux_A, uy_A, ux_B, uy_B]
+    '''
+
+    #--Mass*Acceleration--
+    Fx_A, Fy_A, Fx_B, Fy_B = F_bar(rho, A, L, x_App, y_App, x_Bpp, y_Bpp)
+    #print("old F: ", Fx_A, Fy_A, Fx_B, Fy_B)
+
+    #print("Fs: ", Fx_A, Fy_A, Fx_B, Fy_B)
+    #print("F_A mag: ", math.sqrt(Fx_A*Fx_A + Fy_A*Fy_A))
+    #print("F_B mag: ", math.sqrt(Fx_B*Fx_B + Fy_A*Fy_B))
+
+    #--Internal Elastic forces--
+    Qx_A, Qy_A, Qx_B, Qy_B = Q_bar(eta, A, L, E, x_Ap, y_Ap, x_Bp, y_Bp, x_A, y_A, x_B, y_B)
+
+    #print("Qs: ", Qx_A, Qy_A, Qx_B, Qy_B)
+
+    Px_A = Fx_A + Qx_A
+    Py_A = Fy_A + Qy_A
+    Px_B = Fx_B + Qx_B
+    Py_B = Fy_B + Qy_B
+
+    #print("Ps: ", Px_A, Py_A, Px_B, Py_B)
+
+    return Px_A, Py_A, Px_B, Py_B
+
+#small angle approximation
+import numpy as np
+
+def interpolate_bean():
+    print("to do")
+
+#the stiffness matrix C
+def stiffness_matrix_beam(C_ee, C_ek, C_kk, L):
+    L2 = L*L
+    L3 = L*L*L
+    C = np.array([[C_ee / L,  0,            C_ek/L,      -C_ee/L,  0,            -C_ek/L   ],
+                  [0,         12*C_kk/L3,   6*C_kk/L2,   0,        -12*C_kk/L3,  6*C_kk/L2  ],
+                  [C_ek/L,    6*C_kk/L2,    4*C_kk/L,    -C_ek/L,  -6*C_kk/L2,   2*C_kk/L   ],
+                  [-C_ee/L,   0,            -C_ek/L,     C_ee/L,   0,            C_ek/L     ],
+                  [0,         -12*C_kk/L3,  -6*C_kk/L2,  0,        12*C_kk/L3,   -6*C_kk/L2 ],
+                  [-C_ek/L,   6*C_kk/L2,    2*C_kk/L,    C_ek/L,   -6*C_kk/L2,   4*C_kk/L   ]])
+    return C
+
+def area_beam(w, h):
+    return w*h
+
+#the inputs shoule be lists of arrays
+#E are the elasitic moduli
+#w are the widths of the 
+#h are the height of layer
+def elastic_constants(E_list, w_list, h_list):
+    C_ee = 0
+    C_kk = 0
+    C_ek = 0
+    layer_start_height = 0
+    for i, E_i in enumerate(E_list):
+        h_i = h_list[i]
+        w_i = w_list[i]
+        
+        A_i = area_beam(w_i, h_i)
+        
+        C_ee += E_i * A_i
+        
+        y_i = layer_start_height + (h_i /2)
+        #print("Layer start height: ", layer_start_height, " layer height: ", h_i, " Layer y_i: ", y_i)
+        
+        #second moment of inertia
+        I_i = A_i * ((h_i * h_i / 12) + (y_i * y_i))
+        C_kk += E_i * I_i
+        
+        C_ek -= E_i * A_i * y_i
+        
+        layer_start_height += h_i
+    
+    #print(C_ee, C_kk, C_ek)
+    
+    return C_ee, C_kk, C_ek
+
+def total_mass_beam(rho_list, w_list, h_list, L):
+    density = 0
+    for i, rho_i in enumerate(rho_list):
+        w_i = w_list[i]
+        h_i = h_list[i]
+        A_i = area_beam(w_i, h_i)
+        density += rho_i * A_i
+        
+    return density * L
+
+#the mass matrix M
+def M_beam(rho_list, w_list, h_list, L):
+    a = 1/50
+    C = np.array([[1/2, 0,   0,     0,   0,   0    ],
+                  [0,   1/2, 0,     0,   0,   0    ],
+                  [0,   0,   a*L*L, 0,   0,   0    ],
+                  [0,   0,   0,     1/2, 0,   0    ],
+                  [0,   0,   0,     0,   1/2, 0    ],
+                  [0,   0,   0,     0,   0,   a*L*L]])
+    total_mass = total_mass_beam(rho_list, w_list, h_list, L)
+    return total_mass * C
+
+#use this interface for the mass matrix
+def C_beam(E_list, w_list, h_list, L):
+    C_ee, C_kk, C_ek    = elastic_constants(E_list, w_list, h_list)
+    C                   = stiffness_matrix_beam(C_ee, C_ek, C_kk, L)
+    return C
+
+    #a bar element has two nodes A and B
+import numpy as np
+import math
+
+def M_bar(rho, A, L):
+    return rho * A * L / 2
+
+#F = MA for a bar
+def f_bar(rho, A, L, u_0pp, v_0pp, u_1pp, v_1pp):
+    M      = M_bar(rho, A, L)
+    F_0   = M * u_0pp
+    F_1   = M * v_0pp
+    F_2   = M * u_1pp
+    F_3   = M * v_1pp
+    return  F_0, F_1, F_2, F_3
+
+#elastic const
+def elastic_const_bar(E, A, L):
+    return E * A / L
+
+def elastic_scale_bar(L, dx, dy):
+    return 1 - (L / math.sqrt(dx*dx + dy*dy))
+
+def viscus_const_bar(eta, A, L):
+    return eta * A / L
+
+#q(u, up) internal forces
+#elastic forces
+#using the Kelvin-Voigt model
+def q_bar(eta, A, L, E, dx, dy, dxp, dyp):
+
+
+    viscus_const    = viscus_const_bar(eta, A, L)
+    elastic_const   = elastic_const_bar(E, A, L)
+
+    elastic_scale = elastic_scale_bar(L, dx, dy)
+
+    VISCx_A = viscus_const * -dxp
+    VISCy_A = viscus_const * -dyp
+    VISCx_B = viscus_const *  dxp
+    VISCy_B = viscus_const *  dyp
+
+    ELASx_A = elastic_const * elastic_scale * -dx
+    ELASy_A = elastic_const * elastic_scale * -dy
+    ELASx_B = elastic_const * elastic_scale *  dx
+    ELASy_B = elastic_const * elastic_scale *  dy
+
+    Q_0    = VISCx_A + ELASx_A
+    Q_1    = VISCy_A + ELASy_A
+    Q_2    = VISCx_B + ELASx_B
+    Q_3    = VISCy_B + ELASy_B
+
+    return Q_0, Q_1, Q_2, Q_3
+
+
+#external force p
+#p = m*a + q, where q is the internal forces
+# u = (x_a, y_a, x_b, y_b)
+# u' = (x_aP, y_aP, x_bP, y_bP)
+def p_bar(  rho,   A,     L,     eta,     E,
+            u_0pp, v_0pp, u_1pp, v_1pp,
+            u_0p,  v_0p,  u_1p,  v_1p,
+            u_0,   v_0,   u_1,   v_1):
+    '''
+    rho is the density
+    A is the area
+    L is the length
+    eta is the viscosity
+    upp is u double prime
+    up is u prime
+    u is the prosition of the nodes [ux_A, uy_A, ux_B, uy_B]
+    '''
+
+    #--Mass*Acceleration--
+    F_0, F_1, F_2, F_3 = f_bar(rho, A, L, u_0pp, v_0pp, u_1pp, v_1pp)
+
+    #--Internal Elastic forces--
+    #B - A here
+    dx  = u_1 - u_0
+    dy  = v_1 - v_0
+
+    dxp = u_1p - u_0p
+    dyp = v_1p - v_0p
+    Q_0, Q_1, Q_2, Q_3 = q_bar(eta, A, L, E, dx, dy, dxp, dyp)
+
+
+    P_0 = F_0 + Q_0
+    P_1 = F_1 + Q_1
+    P_2 = F_2 + Q_2
+    P_3 = F_3 + Q_3
+
+    #print("Ps: ", Px_A, Py_A, Px_B, Py_B)
+
+    return P_0, P_1, P_2, P_3
+
+CHAR_BAR = np.array([[1,  0, -1,  0],
+                     [0,  1,  0, -1],
+                     [-1, 0,  1,  0],
+                     [0, -1,  0,  1] ])
+
+#tangent stiffness matrix
+def K_bar(E, A, L, u_0, v_0, u_1, v_2):
+    #B - A here
+    dx  = u_1 - u_0
+    dy  = v_2 - v_0
+
+    elastic_const = elastic_const_bar(E, A, L)
+    elastic_scale = elastic_scale_bar(L, dx, dy)
+
+    characteristic_bar1 = CHAR_BAR
+    
+    dx2 = dx * dx
+    dxdy = dx * dy
+    dy2 = dy * dy
+    mag = math.sqrt(dx2 + dy2)
+    scale2 = E * A / (mag * mag * mag)
+
+    characteristic_bar2 = np.array([[dx2,   dxdy,  -dx2,  -dxdy],
+                                    [dxdy,   dy2,  -dxdy, -dy2 ],
+                                    [-dx2,  -dxdy,  dx2,   dxdy],
+                                    [-dxdy, -dy2,   dxdy,  dy2 ] ])    
+    
+    
+    K = elastic_const * elastic_scale * characteristic_bar1
+    
+    return K
+
+#Tangent damping matrix
+def D_bar(eta, A, L):
+    viscus_const = viscus_const_bar(eta, A, L)
+    return viscus_const * CHAR_BAR
+
+if __name__ == "__main__":
+    import random
+    for i in range(10):
+        K = K_bar(random.random(), random.random(), random.random(), random.random(), random.random(), random.random(), random.random())
+        print("Tangent stiffness matrix: ", K)
+        P_0, P_1, P_2, P_3 = p_bar(random.random(), random.random(), random.random(), random.random(), random.random(),
+                                        random.random(), random.random(), random.random(), random.random(),
+                                        random.random(), random.random(), random.random(), random.random(),
+                                        random.random(), random.random(), random.random(), random.random())
+        print("Ps: ", P_0, P_1, P_2, P_3)
+        print(CHAR_BAR)
+        D = D_bar(random.random(), random.random(), random.random())
+        print("tangent damping matrix: ", D)
+        what = input("LOOK at the output, press a key")
+
+#example_u_ctrl(gK, num_nodes, X_unbraced, Y_unbraced)
+    '''
+    knw_u_msk = np.zeros(3 * num_nodes, dtype = int)
+    knw_u_msk[0] =  1
+    knw_u_msk[1] =  1
+    knw_u_msk[2] =  1
+    knw_u_msk[-2] = 1
+    u_knw = np.zeros(3 * num_nodes, dtype = float)
+    u_knw[0] = 0.0
+    u_knw[1] = 0.0
+    u_knw[2] = 0.0
+    u_knw[-2] = -1.0
+
+    u_prop = np.zeros(3 * num_nodes, dtype = float)
+    _masked_control(u_prop, knw_u_msk, u_knw, gK)
+    results = jopt.minimize(_masked_control, u_prop, args = (knw_u_msk, u_knw, gK), method = "BFGS")
+    print(results.x)
+    print("forces")
+    p = np.matmul(gK, results.x)
+    print(p)
+    '''
+
+    '''
+    #try with masks
+    ctrl_u = np.zeros(3 * num_nodes)
+    ctrl_u[0] = 0 #redundent I know
+    ctrl_u[1] = 0
+    ctrl_u[2] = 0
+    ctrl_u[-2] = -10
+    ctrl_mask = np.zeros(3 * num_nodes, dtype=int)
+    ctrl_mask[0] = 1 #redundent I know
+    ctrl_mask[1] = 1
+    ctrl_mask[2] = 1
+    ctrl_mask[-2] = 1
+    print("control vector")
+    print(ctrl_u)
+    print("control mask")
+    print(ctrl_mask)
+    
+    u_0 = np.zeros(3 * num_nodes)
+    u_mask = np.ones(3 * num_nodes, dtype=int)
+    u_mask[0] = 0 #redundent I know
+    u_mask[1] = 0
+    u_mask[2] = 0
+    u_mask[-2] = 0
+    print("u_0")
+    print(u_0)
+    print("u mask")
+    print(u_mask)
+    
+    print("testing element wise multiply")
+    ctrl_masked = np.multiply(ctrl_u, ctrl_mask)
+    print(ctrl_masked)
+    
+    results = jopt.minimize(_masked_control,u_0, args=(u_mask, ctrl_u, ctrl_mask, gK), method = "BFGS")
+    print(results)
+    
+    u = np.add(results.x, ctrl_masked)
+    print("u")
+    print(u)
+    p = np.matmul(gK, u)
+    print("p")
+    print(p)
+
+    
+    x_new = np.zeros(num_nodes)
+    y_new = np.zeros(num_nodes)
+    for i in range(num_nodes):
+        x_new[i] = X_unbraced[i] + u[i*3]
+        y_new[i] = Y_unbraced[i] + u[i*3 + 1]
+    
+    print("x_new")
+    print(x_new)
+    print("y_new")
+    print(y_new)
+    
+    import matplotlib.pyplot as plt
+    
+    fig, ax = plt.subplots(constrained_layout=True)
+    ax.set_title("Bracing the bow")
+    ax.plot(X_unbraced, Y_unbraced, color = "red")
+    ax.plot(x_new, y_new, color = "blue")
+    ax.set_xlabel("mm")
+    ax.set_ylabel("mm")
+    plt.show()
+    '''
+
+'''
+print("build a better inverse")
+gK_Inv = scipy.linalg.inv(gK)
+result = _better_inv(gK_Inv, gK)
+results = jopt.minimize(_better_inv, gK_Inv, args=(gK,), method = "BFGS")
+gK_better = results.x
+print(gK_better)
+
+u = np.zeros(3 * num_nodes)
+u_i = np.zeros(3 * num_nodes)
+u_i[-2] = -219
+DELTAu_i = np.ones(3 * num_nodes)
+energy = _energy(DELTAu_i, u, u_i, gK)
+print(energy)
+results = jopt.minimize(_energy, DELTAu_i, args=(u, u_i, gK), method="BFGS")
+print("DELTAu_i")
+print(results.x)
+print("u_i+1")
+u_ip1 = results.x + u_i
+print(u_ip1)
+
+u = u_i
+u_i = u_i + DELTAu_i
+u_i[0] = 0
+u_i[1] = 0
+u_i[2] = 0
+u_i[-3] = 0
+u_i[-2] = -219
+DELTAu_i = np.ones(3 * num_nodes)
+energy = _energy(DELTAu_i, u, u_i, gK)
+print(energy)
+results = jopt.minimize(_energy, DELTAu_i, args=(u, u_i, gK), method="BFGS")
+print("DELTAu_i")
+print(results.x)
+print("u_i+1")
+u_ip1 = results.x + u_i
+print(u_ip1)
+'''
+
+'''
+print("numpy version")
+gK_Inv = np.linalg.inv(gK)
+result = np.matmul(gK_Inv, gK)
+print(np.linalg.norm(result))
+
+print("scipy version")
+gK_Inv = scipy.linalg.inv(gK)
+result = np.matmul(gK_Inv, gK)
+print(scipy.linalg.norm(result))
+
+print("jax np version")
+gK_inv = jnp.linalg.inv(gK)
+result = jnp.matmul(gK_inv, gK)
+print(jnp.linalg.norm(gK_inv))
+
+print("jax scipy version")
+gK_inv = jax.scipy.linalg.inv(gK)
+result = jnp.matmul(gK_inv, gK)
+print(scipy.linalg.norm(gK_inv))
+
+u_0 = np.ones(3 * num_nodes)
+p = np.matmul(gK, u_0)
+gK_Inv = scipy.linalg.inv(gK)
+u_1 = np.matmul(gK_inv, p)
+print("scipy inversion and back again")
+print(u_1)
+'''
+'''
+#please invert K before you get here
+def _DELTAu_i(p: np.ndarray, u_i: np.ndarray, Kofu_i: np.ndarray, K_Inverse: np.ndarray) -> np.ndarray:
+qofu_i = np.matmul(Kofu_i, u_i)
+residual = np.subtract(p, qofu_i)
+
+print("qofu_i ", qofu_i)
+print("residual ", residual)
+print("shape of K_inv ", K_Inverse.shape)
+print("shape of residual ", residual.shape)
+
+DELTAu_i = np.matmul(K_Inverse, residual)
+#print(DELTAu_i)
+return DELTAu_i
+def _energy(DELATu_1: np.ndarray, u_0: np.ndarray, u_1: np.ndarray, gK: np.ndarray) -> float:
+p_0 = jnp.matmul(gK, u_0)
+p_1 = jnp.matmul(gK, u_1)
+diff = jnp.subtract(p_0, p_1)
+energy = jnp.dot(DELATu_1, diff)
+return energy
+
+def _masked_control(u_ukn: np.ndarray, knw_u_msk: np.ndarray, u_knw: np.ndarray, gK: np.ndarray) -> float:
+u_knw_masked    = jnp.multiply(u_knw, knw_u_msk)
+unk_u_msk       = jnp.multiply(-1, knw_u_msk)
+unk_u_msk       = jnp.add(1, unk_u_msk)
+u_ukn_masked    = jnp.multiply(u_ukn, unk_u_msk)
+
+u = jnp.add(u_knw_masked, u_ukn_masked)
+#print("u")
+#print(u)
+p = jnp.matmul(gK, u)
+#print("p")
+#print(p)
+kwn_p_msk = unk_u_msk
+p_masked = jnp.multiply(p, kwn_p_msk)
+#print("p_masked")
+#print(p_masked)
+
+#keep internal forces 0
+norm = jnp.linalg.norm(p_masked)
+#print(norm)
+return norm
+
+def _solve_brace2(gK: np.ndarray, u_0: np.ndarray) -> np.array:
+gK_Inv = np.linalg.inv(gK)
+u_i = np.copy(u_0)
+for i in range(10):
+    u_i[0] = 0
+    u_i[1] = 0
+    u_i[-2] = -1
+    
+    p_i = np.matmul(gK, u_0)
+    
+    DELTAu = _DELTAu_i(p_i, u_i, gK, gK_Inv)
+    
+    u_i = DELTAu
+    
+    print(u_i)
+    
+    
+def _solve_brace(gK: np.ndarray, u_0: np.ndarray, 
+                fix_ndics: np.ndarray, 
+                displace_indices: np.ndarray, displacements: np.ndarray) -> np.ndarray:
+if displace_indices.size != displacements.size:
+    print("oh no!, displace indices and displacements need to be the same length")
+u_i = np.copy(u_0)
+u_i[-2] = -1    #put outside loop
+u_i[-1] = 0
+u_i[0] = 0
+u_i[1] = 0
+p = np.matmul(gK, u_i)
+for i in range(2):
+    #fix
+    u_i[0] = 0
+    u_i[1] = 0
+    p_i = np.matmul(gK, u_i)
+    u_i = np.linalg.solve(gK, p_i)
+return u_i
+
+def example_u_ctrl(gK, num_nodes: float, X_unbraced: np.ndarray, Y_unbraced: np.ndarray):
+knwn_u_indices = np.array([0, 1, 2, -2], dtype=int)
+u_knwn         = np.array([0., 1., 0., -1.])
+
+gK_col = _get_columns(gK, knwn_u_indices)
+gK_sub = _get_rows(gK_col, knwn_u_indices)
+p_sub = np.matmul(gK_sub, u_knwn)
+print("p_sub")
+print(p_sub)
+
+p = np.zeros(3 * num_nodes)
+for i, ndx in enumerate(knwn_u_indices):
+    p[ndx] = p_sub[i]
+print("p")
+print(p)
+
+u = np.linalg.solve(gK, p)
+print("u")
+print(u)
+
+def example_p_driven0(gK: np.ndarray, X_unbraced: np.ndarray, Y_unbraced: np.ndarray):
+p_knwns = np.ones(3 * num_nodes, dtype = int)
+p_knwns[0] = 0
+p_knwns[1] = 0
+p_knwns[2] = 0
+p = np.zeros(3 * num_nodes)
+p[-3] = -.04
+p[-2] = -.04
+
+print("number of known ps: ", np.sum(p_knwns, dtype = int))
+    
+u_knwns = np.zeros(3 * num_nodes)
+u_knwns[0] = 1
+u_knwns[1] = 1
+u_knwns[2] = 1
+print("number of known us: ", np.sum(u_knwns))
+
+print("p knowns and u knowns should be the inverse of eachother")
+print(u_knwns)
+print(p_knwns)
+add = np.add(u_knwns, p_knwns)
+sumation = np.sum(add)
+print("so there reduced sum should equal their length= ", sumation)
+print("length of u_knwns= ", u_knwns.size)
+print("length of p_knows= ", p_knwns.size)
+    
+known_p_indices = []
+for i in range(p_knwns.size):
+    if p_knwns[i] == 1:
+        known_p_indices.append(i)
+print(known_p_indices)
+    
+gK_cols = _get_columns(gK, np.array(known_p_indices))
+print(gK_cols.shape)
+gK_sub = _get_rows(gK_cols, np.array(known_p_indices))
+print(gK_sub.shape)
+    
+disp = scipy.linalg.solve(gK_sub, p[3:])
+print("displacements")
+print(disp)
+u = np.append(np.array([0, 0, 0,]), disp)
+print(u)
+print(u.shape)
+p = np.matmul(gK, u)
+print(p)
+print(p.shape)
+    
+x_new = np.zeros(num_nodes)
+y_new = np.zeros(num_nodes)
+for i in range(num_nodes):
+    x_new[i] = X_unbraced[i] + u[i*3]
+    y_new[i] = Y_unbraced[i] + u[i*3 + 1]
+    
+print("x_new")
+print(x_new)
+print("y_new")
+print(y_new)
+    
+fig, ax = plt.subplots(constrained_layout=True)
+ax.set_title("Bracing the bow")
+ax.plot(X_unbraced, Y_unbraced, color = "red")
+ax.plot(x_new, y_new, color = "blue")
+ax.set_xlabel("mm")
+ax.set_ylabel("mm")
+plt.show()  
+
+#def _solve_brace3(gK: np.ndarray, u_0: np.ndarray) -> np.ndarray:
+def _get_rows(M: np.ndarray, indices: np.ndarray) -> np.ndarray:
+slice = np.zeros([indices.size, M.shape[1]]) #to slice a row we need the size of columes
+for i, indx in enumerate(indices):
+    slice[i] = M[indx, :] #all column entries at row indx
+return slice
+
+def _get_columns(M: np.ndarray, indices: np.ndarray) -> np.ndarray:
+slice = np.zeros([indices.size, M.shape[0]]) #to slice a colums we need the size of rows
+for i, indx in enumerate(indices):
+    slice[i] = M[:, indx] #all the row entries at column indc
+slice = slice.transpose() #np is row major so need to transpose
+return slice
+'''

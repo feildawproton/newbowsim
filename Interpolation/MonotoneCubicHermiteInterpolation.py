@@ -6,6 +6,8 @@ import numpy as np
 from typing import Tuple
 import math
 
+from MCHI_cu_wrapper import cu_interpolate_Ts
+
 def _calc_M(X: np.ndarray, Y: np.ndarray) -> np.ndarray:
     if X.size != Y.size:
         print("sizes of X and Y need to match")
@@ -75,70 +77,84 @@ def _h_01(t):
 def _h_11(t):
     return t*t*t - t*t
 
-def _interpolate_section(x_k, x_kp1, y_k, y_kp1, m_k, m_kp1, res) -> Tuple[np.ndarray, np.ndarray]:
-    delta = x_kp1 - x_k
-    
-    X = np.zeros(res)
-    Y = np.zeros(res)
-    for n in range(res):
-        t = n / res
-        Y[n] = y_k*_h_00(t) + delta*m_k*_h_10(t) + y_kp1*_h_01(t) + delta*m_kp1*_h_11(t)
-        X[n] = x_k + t*delta
-    
-    return X, Y
+# see calling function for description
+def _interpolate_Ts(Ts: np.ndarray, T_interpolated: np.ndarray, Ts_k_indices: np.ndarray):
+    T_scale = Ts[-1] - Ts[0]
+    N = T_interpolated.size
+    for n in range(N):
+        T_intrpltd_val = ((n / (N - 1)) * T_scale) + Ts[0] 
+        
+        k = 0
+        for i in range(Ts.size):
+            if T_intrpltd_val > Ts[i]:
+                k = i
+                
+        Ts_k_indices[n]     = k
+        T_interpolated[n]   = T_intrpltd_val
 
-def _interpolate(L: np.ndarray, W: np.ndarray, M: np.ndarray, Ns: int) -> Tuple[np.ndarray, np.ndarray]:
-    if L.size != W.size != M.size:
-        print("lengths of X, Y, and M must be the same")
+#see calling function for description
+def _interpolate_Ys(Ts: np.ndarray, Ys: np.ndarray, Ms: np.ndarray, 
+                     Ts_k_indices: np.ndarray, T_interpolated: np.ndarray, Y_interpolated: np.ndarray):
+    N = T_interpolated.size
+    for n in range(N):
+        k       = Ts_k_indices[n]
+        delta_t = Ts[k + 1] - Ts[k]
+        t       = (T_interpolated[n] - Ts[k]) / delta_t
+        Y_interpolated[n] = Ys[k]*_h_00(t) + delta_t*Ms[k]*_h_10(t) + Ys[k + 1]*_h_01(t) + delta_t*Ms[k + 1]*_h_11(t)
 
-    intX = []
-    intY = []
-    for k in range(L.size - 1):
-        X_section, Y_section = _interpolate_section(L[k], L[k+1], W[k], W[k+1], M[k], M[k+1], Ns[k])
-        intX = np.append(intX, X_section)
-        intY = np.append(intY, Y_section)
-    intX = np.append(intX, L[-1])
-    intY = np.append(intY, W[-1])
-    return intX, intY
+# Ts is the time or length axis to be interpolated.  For monotonic cubic interpolation it is expexted to be ordered. could be thought of as X
+# Ys are the measures to be interpolated.
+# N is the length of the desired interpolation
+# return a tuple of interpolated Ts and interpolated Ys
+def interpolate_1d_grid(Ts: np.ndarray, Ys: np.ndarray, N: int, use_cuda=False) -> Tuple[np.ndarray, np.ndarray]: 
+    # first interpolate Ts
+    # again, the incoming Ts are assumed to be ordered :-/
+    # also find the left index into Ts
+    # T_start = Ts[0]
+    # T_end   = Ts[-1]
+    # there are some manipulations (+Ts[0] and / (N -1)) to make sure we go [Ts[0] -> Ts[-1]]
+    # for every value in T_interpolated, we find the value in Ts that is the largest withough going over
+    # this is used in the interpolation
+    T_interpolated = np.zeros(N)    
+    Ts_k_indices = np.zeros(N, dtype=np.int32)
+    if use_cuda == True:
+        cu_interpolate_Ts(Ts, T_interpolated, Ts_k_indices)
+    else:
+        _interpolate_Ts(Ts, T_interpolated, Ts_k_indices)
     
-def interpolate_1d(L: np.ndarray, W: np.ndarray, N_tot: int) -> Tuple[np.ndarray, np.ndarray]:
-    #proportially assign the sections
-    print("Requesting N_tot= ", N_tot)
-    tot_len = 0
-    lens = np.zeros(W.size - 1)
-    for i in range(lens.size):
-        length   = math.sqrt((W[i + 1] - W[i])*(W[i + 1] - W[i]) + (L[i + 1] - L[i])*(L[i + 1] - L[i]))
-        #print(length)
-        lens[i]  = length
-        tot_len += length
-    #print("total len= ", tot_len)
-    #print("lens= ", lens)
-
-    Ns = np.zeros(lens.size, dtype=int)
-    new_n_tot = 0
-    for i in range(Ns.size):
-        frac        = lens[i] / tot_len
-        N           = int(frac * N_tot) + 1
-        Ns[i]       = N
-        new_n_tot   += N
-        #print(lens[i], N, new_n_tot)
-    
-    print("Ns: ", Ns)
-    print("New Total N= ", new_n_tot)
-
-    M = _calc_M(L, W)
-    intL, intW = _interpolate(L, W, M, Ns)
-    return intL, intW
+    # we will first check if Y is multidimensional
+    # if it is we will interpolate along the sequence for each dimension of the last 
+    # Ms is what makes this interpolation monotonic
+    # interpolate Ys
+    # use the k (left) and k+1 (right) indices per n, into Ts, to calculate delta_t
+    # calculate t within a section, which should be in the range [0->1]
+    # calculate Y_interpolated per wikipedia
+    if len(Ys.shape) == 1:
+        Ms              = _calc_M(Ts, Ys)
+        Y_interpolated  = np.zeros(N)
+        _interpolate_Ys(Ts, Ys, Ms, Ts_k_indices, T_interpolated, Y_interpolated)
+        return T_interpolated, Y_interpolated
+    elif len(Ys.shape) == 2:
+        Y_interpolated = np.zeros([N, Ys.shape[-1]])
+        for feat in range(Ys.shape[-1]):
+            Ms_feat = _calc_M(Ts, Ys[:,feat])
+            _interpolate_Ys(Ts, Ys[:,feat], Ms_feat, Ts_k_indices, T_interpolated, Y_interpolated[:,feat])
+        return T_interpolated, Y_interpolated
+    else:
+        what = input("aw naw")
+        return [0], [0]
 
 if __name__ == "__main__":
     
     import random
+
     for i in range(10):
-        L = np.array([0, 1,  2, 3,  4,  5,  6,   7])
-        W = np.random.rand(8)
-        N = random.randint(8, 64)
+        T_unsorted = np.random.rand(16)
+        Ts = np.sort(T_unsorted)        #should be sorted in time
+        Ys = np.random.rand(Ts.size,3)
+        N = random.randint(256, 1024)
         
-        intX, intY = interpolate_1d(L, W, N)
+        T_interpolated, Y_interpolated = interpolate_1d_grid(Ts, Ys, N, use_cuda=False)
         print("Resolution= ", N, " total.")
         #print("X= ", X)
         #print("Y= ", Y)
@@ -148,9 +164,9 @@ if __name__ == "__main__":
         import matplotlib.pyplot as plt
         #plt.style.use('_mpl-gallery')
         
-        fig, ax = plt.subplots()
-        
-        ax.plot(L, W, linewidth = 2.0, color = "blue")
-        ax.plot(intX, intY, color = "red")
+        fig, ax = plt.subplots(len(Ys[-1]), 1, constrained_layout=True)
+        for i in range(len(Ys[-1])):
+            ax[i].plot(Ts, Ys[:,i], linewidth = 2.0, color = "blue")
+            ax[i].plot(T_interpolated, Y_interpolated[:, i], color = "red")
         
         plt.show()

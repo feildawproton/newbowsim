@@ -1,5 +1,5 @@
 General = {
-"Limb elements"		: 70,
+"Limb elements"		: 4,
 "String elements"	: 10
 }
 
