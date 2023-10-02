@@ -142,8 +142,8 @@ static float _h_11(const float t)
 }
 void interpolate_Y_omp(const unsigned N_orig     , const unsigned N_new      ,
    	               const float    *T         , const float    *Y         , const float *M, 
-		       const unsigned *T_k_ndc   ,
-		             float    *T_intrpltd,       float    *Y_intrpltd                )
+		       const unsigned *T_k_ndc   , const float    *T_intrpltd,       
+		       float          *Y_intrpltd)
 {
 	#pragma omp parallel for
 	for(unsigned n = 0; n < N_new; n++)
@@ -164,9 +164,7 @@ void interpolate_Y_omp(const unsigned N_orig     , const unsigned N_new      ,
 		float h_01 = _h_01(t);
 		float h_11 = _h_11(t);
 
-		float left  = (Y_k  * h_00) + (dt * M_k  * h_10);
-		float right = (Y_k1 * h_01) + (dt * M_k1 * h_11);
-		float Y_n   = left + right;
+		float Y_n  = (Y_k*h_00) + (dt*M_k*h_10) + (Y_k1*h_01) + (dt*M_k1*h_11);
 
 		Y_intrpltd[n] = Y_n;
 	}
